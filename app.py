@@ -5,7 +5,7 @@ from datetime import datetime
 st.set_page_config(page_title="태형레이더", page_icon="📡", layout="wide")
 
 st.title("📡 태형레이더")
-st.caption("NASDAQ · KOSPI · 일본 Nikkei · 대만 TAIEX 자동 지수 레이더")
+st.caption("NASDAQ · KOSPI · Nikkei 225 · TAIEX 자동 지수 레이더")
 
 try:
     import yfinance as yf
@@ -28,7 +28,6 @@ def fetch_index(ticker):
     try:
         obj = yf.Ticker(ticker)
 
-        # 장중 데이터 우선, 실패하면 일봉
         hist = obj.history(period="2d", interval="1m", prepost=True)
         if hist is None or hist.empty:
             hist = obj.history(period="5d", interval="1d")
@@ -74,32 +73,36 @@ def signal_text(change):
         return "하락"
     return "강한 하락"
 
-if st.button("🔄 지수 새로고침"):
+def calc_rows():
+    rows = []
+    for item in INDEXES:
+        live = fetch_index(item["티커"])
+        if live:
+            rows.append({**item, **live, "시장점수": market_score(live["등락률"]), "신호": signal_text(live["등락률"])})
+        else:
+            rows.append({
+                **item,
+                "현재값": None,
+                "전일종가": None,
+                "등락률": 0.0,
+                "상태": "데이터 대기",
+                "시장점수": 50,
+                "신호": "데이터 대기",
+            })
+    return pd.DataFrame(rows)
+
+if st.button("🔄 자동 새로고침"):
     st.cache_data.clear()
     st.rerun()
 
-rows = []
-for item in INDEXES:
-    live = fetch_index(item["티커"])
-    if live:
-        rows.append({**item, **live, "시장점수": market_score(live["등락률"]), "신호": signal_text(live["등락률"])})
-    else:
-        rows.append({
-            **item,
-            "현재값": None,
-            "전일종가": None,
-            "등락률": 0.0,
-            "상태": "수동/대기",
-            "시장점수": 50,
-            "신호": "데이터 대기",
-        })
+df = calc_rows()
+df["TAO 추정 기여"] = df["등락률"] * df["가중치"]
+total = df["TAO 추정 기여"].sum()
 
-df = pd.DataFrame(rows)
-
-tab1, tab2, tab3 = st.tabs(["🌏 4대 지수", "✍️ 수동 보정", "🧠 TAO 영향"])
+tab1, tab2, tab3 = st.tabs(["🌏 글로벌 지수", "🧠 TAO 영향", "🔍 관심도 레이더"])
 
 with tab1:
-    st.subheader("자동 지수 레이더")
+    st.subheader("4대 지수 자동 조회")
 
     cols = st.columns(4)
     for i, r in df.iterrows():
@@ -115,36 +118,18 @@ with tab1:
     show["전일종가"] = show["전일종가"].apply(lambda x: "-" if pd.isna(x) else f"{x:,.2f}")
     show["등락률"] = show["등락률"].apply(lambda x: f"{x:+.2f}%")
     show["가중치"] = show["가중치"].apply(lambda x: f"{x*100:.0f}%")
+    show["TAO 추정 기여"] = show["TAO 추정 기여"].apply(lambda x: f"{x:+.2f}%p")
     st.dataframe(show, use_container_width=True, hide_index=True)
 
 with tab2:
-    st.subheader("수동 보정")
-    st.caption("자동 조회가 실패하거나 숫자가 이상하면 등락률만 직접 수정하세요.")
-
-    edited = st.data_editor(
-        df[["지역", "지수", "티커", "등락률", "가중치", "메모", "상태"]],
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "등락률": st.column_config.NumberColumn("등락률(%)", step=0.1, format="%.2f"),
-            "가중치": st.column_config.NumberColumn("가중치", step=0.01, format="%.2f"),
-        },
-    )
-    st.session_state["market_edited"] = edited
-
-with tab3:
     st.subheader("시장 기반 TAO 예상 영향")
-
-    calc = st.session_state.get("market_edited", df[["지역", "지수", "티커", "등락률", "가중치", "메모", "상태"]]).copy()
-    calc["TAO 추정 기여"] = calc["등락률"] * calc["가중치"]
-    total = calc["TAO 추정 기여"].sum()
 
     c1, c2, c3 = st.columns(3)
     c1.metric("TAO 예상 영향", f"{total:+.2f}%")
     c2.metric("업데이트", datetime.now().strftime("%H:%M:%S"))
-    c3.metric("지수 구성", "NASDAQ/KOSPI/Nikkei/TAIEX")
+    c3.metric("자동 지수", "4개")
 
-    impact = calc.copy()
+    impact = df[["지역", "지수", "등락률", "가중치", "TAO 추정 기여", "메모", "상태"]].copy()
     impact["등락률"] = impact["등락률"].apply(lambda x: f"{x:+.2f}%")
     impact["가중치"] = impact["가중치"].apply(lambda x: f"{x*100:.0f}%")
     impact["TAO 추정 기여"] = impact["TAO 추정 기여"].apply(lambda x: f"{x:+.2f}%p")
@@ -157,4 +142,18 @@ with tab3:
     else:
         st.info("4대 지수 기준 TAO 영향은 제한적입니다.")
 
-st.caption("무료 공개 데이터 기반이라 지연·누락 가능성이 있습니다. 자동 조회 실패 시 수동 보정 탭을 사용하세요.")
+with tab3:
+    st.subheader("조회수/관심도 급증 레이더")
+    st.caption("다음 업그레이드에서 구도식 관심도 포착 기능을 붙일 예정입니다.")
+
+    concept = pd.DataFrame([
+        {"항목": "네이버 뉴스 언급량", "상태": "예정", "설명": "종목명/테마 키워드 뉴스 증가율"},
+        {"항목": "구글 트렌드", "상태": "예정", "설명": "검색 관심도 변화"},
+        {"항목": "네이버 데이터랩", "상태": "예정", "설명": "국내 검색량 변화"},
+        {"항목": "관심도 점수", "상태": "예정", "설명": "검색량+뉴스+시장방향 합산"},
+    ])
+    st.dataframe(concept, use_container_width=True, hide_index=True)
+
+    st.info("목표: 조회수와 검색량이 갑자기 늘어나는 종목/테마를 잡아서 구도 스타일 후보로 표시합니다.")
+
+st.caption("무료 공개 데이터 기반이라 지연·누락 가능성이 있습니다. 데이터 대기 상태가 나오면 새로고침해보세요.")
